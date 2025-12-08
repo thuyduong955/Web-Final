@@ -34,7 +34,7 @@ function CallbackContent() {
 
                 // Redirect to dashboard after short delay
                 setTimeout(() => {
-                    router.push('/dashboard');
+                    router.push('/');
                 }, 1500);
             } catch (e) {
                 setError('Invalid authentication data');
