@@ -65,16 +65,16 @@ export function SidebarNav({ activeId, onChange }: SidebarNavProps) {
     };
 
     const derivedActive: string = activeId || (
-        pathname.startsWith('/training1v1') ? 'training1v1'
-            : pathname.startsWith('/library') ? 'library'
-                : pathname.startsWith('/calendar') ? 'calendar'
-                    : pathname.startsWith('/analytics') ? 'analytics'
+        pathname?.startsWith('/training1v1') ? 'training1v1'
+            : pathname?.startsWith('/library') ? 'library'
+                : pathname?.startsWith('/calendar') ? 'calendar'
+                    : pathname?.startsWith('/analytics') ? 'analytics'
                         : 'home'
     );
 
     const handleLogout = async () => {
         await signOut();
-        router.push('/auth/login');
+        router.push('/login');
     };
 
     return (
