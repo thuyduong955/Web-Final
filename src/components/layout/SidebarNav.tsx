@@ -71,9 +71,9 @@ export function SidebarNav({ activeId, onChange }: SidebarNavProps) {
     };
 
     const derivedActive: string = activeId || (
-        pathname.startsWith('/training1v1') ? 'training1v1'
-            : pathname.startsWith('/library') ? 'library'
-                : pathname.startsWith('/calendar') ? 'calendar'
+        pathname?.startsWith('/training1v1') ? 'training1v1'
+            : pathname?.startsWith('/library') ? 'library'
+                : pathname?.startsWith('/calendar') ? 'calendar'
                     : 'home'
     );
 
@@ -90,7 +90,7 @@ export function SidebarNav({ activeId, onChange }: SidebarNavProps) {
             <div className="flex flex-col items-center gap-4 w-full">
                 {/* Profile Section with Hover Card */}
                 <div className="relative group">
-                    <div 
+                    <div
                         className="w-14 h-14 rounded-full border-2 border-white shadow-sm ring-1 ring-slate-100 cursor-pointer transition-transform hover:scale-105"
                         onClick={() => router.push('/profile')}
                         title="Xem hồ sơ"
