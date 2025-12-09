@@ -408,7 +408,7 @@ export const Training1v1: React.FC = () => {
                                 {interviewers.map((interviewer) => (
                                     <Card key={interviewer.id} className="p-5 hover:shadow-lg transition-shadow">
                                         {/* Header with UserProfilePopup */}
-                                        <div className="flex items-start gap-4 mb-4">
+                                        <div className="flex items-start gap-4 mb-3">
                                             <UserProfilePopup
                                                 userId={interviewer.id}
                                                 userName={interviewer.name}
@@ -416,6 +416,22 @@ export const Training1v1: React.FC = () => {
                                                 userTitle={interviewer.interviewerProfile?.title || undefined}
                                             />
                                         </div>
+
+                                        {/* Title & Company */}
+                                        {interviewer.interviewerProfile && (
+                                            <div className="mb-3">
+                                                {interviewer.interviewerProfile.title && (
+                                                    <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                                                        {interviewer.interviewerProfile.title}
+                                                    </p>
+                                                )}
+                                                {interviewer.interviewerProfile.company && (
+                                                    <p className="text-xs text-cyan-600 dark:text-cyan-400">
+                                                        @ {interviewer.interviewerProfile.company}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
 
                                         {/* Rating */}
                                         {interviewer.interviewerProfile && (
@@ -452,7 +468,7 @@ export const Training1v1: React.FC = () => {
                                         )}
 
                                         {/* Hourly Rate */}
-                                        {interviewer.interviewerProfile?.hourlyRate && (
+                                        {interviewer.interviewerProfile?.hourlyRate && interviewer.interviewerProfile.hourlyRate > 0 && (
                                             <p className="text-sm text-cyan-600 dark:text-cyan-400 font-medium mb-4">
                                                 {interviewer.interviewerProfile.hourlyRate.toLocaleString('vi-VN')}đ / giờ
                                             </p>
