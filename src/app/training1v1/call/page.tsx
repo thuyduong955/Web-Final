@@ -48,7 +48,6 @@ function VideoCallContent() {
     const [messageInput, setMessageInput] = useState('');
     const [connectionState, setConnectionState] = useState<string>('Đang khởi tạo...');
     const [copied, setCopied] = useState(false);
-    const [debugLog, setDebugLog] = useState<string[]>([]);
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -56,47 +55,69 @@ function VideoCallContent() {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const socketRef = useRef<Socket | null>(null);
     const remoteUserRef = useRef<RoomUser | null>(null);
+    const localStreamRef = useRef<MediaStream | null>(null);
 
     const userName = profile?.full_name || user?.email?.split('@')[0] || 'User';
     const userId = user?.id || `guest-${Date.now()}`;
-
-    const addLog = (msg: string) => {
-        console.log(`[VideoCall] ${msg}`);
-        setDebugLog(prev => [...prev.slice(-10), `${new Date().toLocaleTimeString()}: ${msg}`]);
-    };
 
     // Scroll chat to bottom
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatMessages]);
 
-    // Initialize socket connection
+    // Initialize local media first
     useEffect(() => {
-        if (!roomId) {
-            setConnectionState('Room ID không hợp lệ');
-            return;
-        }
+        const initMedia = async () => {
+            try {
+                console.log('[VideoCall] Requesting camera/mic access...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true,
+                });
+                setLocalStream(stream);
+                localStreamRef.current = stream;
+                if (localVideoRef.current) {
+                    localVideoRef.current.srcObject = stream;
+                }
+                console.log('[VideoCall] Camera/mic access granted');
+            } catch (err) {
+                console.error('[VideoCall] Media error:', err);
+                setConnectionState('Không thể truy cập camera/mic');
+            }
+        };
 
-        // Get WebSocket URL from API URL
+        initMedia();
+
+        return () => {
+            localStreamRef.current?.getTracks().forEach(track => track.stop());
+        };
+    }, []);
+
+    // Initialize socket connection after media is ready
+    useEffect(() => {
+        if (!roomId || !localStream) return;
+
+        // Construct WebSocket URL - use the API URL base
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
-        // Remove /api suffix and use HTTP for socket.io (it will upgrade to WebSocket)
+        // Remove /api suffix to get base URL
         const baseUrl = apiUrl.replace('/api', '').replace(/\/$/, '');
 
-        addLog(`Connecting to: ${baseUrl}/video-call`);
+        console.log('[VideoCall] Connecting to:', `${baseUrl}/video-call`);
         setConnectionState('Đang kết nối server...');
 
         const newSocket = io(`${baseUrl}/video-call`, {
-            transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
-            withCredentials: true,
+            transports: ['polling', 'websocket'],
+            withCredentials: false,
             reconnection: true,
             reconnectionAttempts: 5,
             reconnectionDelay: 1000,
+            timeout: 20000,
         });
 
         socketRef.current = newSocket;
 
         newSocket.on('connect', () => {
-            addLog(`Connected! Socket ID: ${newSocket.id}`);
+            console.log('[VideoCall] Connected! Socket ID:', newSocket.id);
             setIsConnected(true);
             setConnectionState('Đang tham gia phòng...');
 
@@ -110,44 +131,44 @@ function VideoCallContent() {
         });
 
         newSocket.on('connect_error', (err) => {
-            addLog(`Connection error: ${err.message}`);
+            console.error('[VideoCall] Connection error:', err.message);
             setConnectionState(`Lỗi kết nối: ${err.message}`);
         });
 
         newSocket.on('disconnect', (reason) => {
-            addLog(`Disconnected: ${reason}`);
+            console.log('[VideoCall] Disconnected:', reason);
             setIsConnected(false);
             setConnectionState('Mất kết nối server');
         });
 
         newSocket.on('room-users', async ({ users }: { users: RoomUser[] }) => {
-            addLog(`Users in room: ${users.length}`);
+            console.log('[VideoCall] Users in room:', users.length);
             if (users.length > 0) {
                 const otherUser = users[0];
                 setRemoteUser(otherUser);
                 remoteUserRef.current = otherUser;
                 setConnectionState(`${otherUser.userName} đã trong phòng`);
 
-                // We joined and there's already someone - create offer
-                setTimeout(() => createOffer(otherUser.socketId), 1000);
+                // Create offer after a short delay
+                setTimeout(() => createOffer(otherUser.socketId), 500);
             } else {
                 setConnectionState('Đang chờ người khác tham gia...');
             }
         });
 
         newSocket.on('user-joined', async ({ userId, userName, role, socketId }: RoomUser) => {
-            addLog(`User joined: ${userName}`);
+            console.log('[VideoCall] User joined:', userName);
             const newUser = { userId, userName, role, socketId };
             setRemoteUser(newUser);
             remoteUserRef.current = newUser;
             setConnectionState(`${userName} đã tham gia`);
 
-            // Existing user creates offer when new user joins
-            setTimeout(() => createOffer(socketId), 1000);
+            // Create offer for new user
+            setTimeout(() => createOffer(socketId), 500);
         });
 
         newSocket.on('user-left', ({ userName }: { userName: string }) => {
-            addLog(`User left: ${userName}`);
+            console.log('[VideoCall] User left:', userName);
             setRemoteUser(null);
             remoteUserRef.current = null;
             setConnectionState(`${userName} đã rời phòng`);
@@ -157,18 +178,17 @@ function VideoCallContent() {
         });
 
         newSocket.on('offer', async ({ offer, fromSocketId }: { offer: RTCSessionDescriptionInit; fromSocketId: string }) => {
-            addLog(`Received offer from: ${fromSocketId}`);
+            console.log('[VideoCall] Received offer from:', fromSocketId);
             await handleOffer(offer, fromSocketId);
         });
 
         newSocket.on('answer', async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-            addLog('Received answer');
+            console.log('[VideoCall] Received answer');
             if (peerConnectionRef.current) {
                 try {
                     await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-                    addLog('Remote description set successfully');
                 } catch (err) {
-                    addLog(`Error setting remote description: ${err}`);
+                    console.error('[VideoCall] Error setting remote description:', err);
                 }
             }
         });
@@ -178,7 +198,7 @@ function VideoCallContent() {
                 try {
                     await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch (err) {
-                    addLog(`Error adding ICE candidate: ${err}`);
+                    console.error('[VideoCall] Error adding ICE candidate:', err);
                 }
             }
         });
@@ -190,39 +210,11 @@ function VideoCallContent() {
         setSocket(newSocket);
 
         return () => {
-            addLog('Cleaning up socket...');
             newSocket.emit('leave-room', { roomId });
             newSocket.disconnect();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [roomId]);
-
-    // Initialize local media
-    useEffect(() => {
-        const initMedia = async () => {
-            try {
-                addLog('Requesting camera/mic access...');
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: true,
-                });
-                setLocalStream(stream);
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
-                addLog('Camera/mic access granted');
-            } catch (err) {
-                addLog(`Media error: ${err}`);
-                setConnectionState('Không thể truy cập camera/mic');
-            }
-        };
-
-        initMedia();
-
-        return () => {
-            // Cleanup handled elsewhere
-        };
-    }, []);
+    }, [roomId, localStream]);
 
     // Create peer connection
     const createPeerConnection = useCallback(() => {
@@ -230,7 +222,7 @@ function VideoCallContent() {
             peerConnectionRef.current.close();
         }
 
-        addLog('Creating peer connection...');
+        console.log('[VideoCall] Creating peer connection...');
         const pc = new RTCPeerConnection(STUN_SERVERS);
 
         pc.onicecandidate = (event) => {
@@ -244,42 +236,41 @@ function VideoCallContent() {
         };
 
         pc.ontrack = (event) => {
-            addLog('Received remote track!');
+            console.log('[VideoCall] Received remote track!');
             if (remoteVideoRef.current && event.streams[0]) {
                 remoteVideoRef.current.srcObject = event.streams[0];
-                setConnectionState('Đang gọi video');
+                setConnectionState('Đang trong cuộc gọi');
             }
         };
 
         pc.onconnectionstatechange = () => {
-            addLog(`Connection state: ${pc.connectionState}`);
+            console.log('[VideoCall] Connection state:', pc.connectionState);
             if (pc.connectionState === 'connected') {
-                setConnectionState('Đang gọi video');
+                setConnectionState('Đang trong cuộc gọi');
             } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
                 setConnectionState('Mất kết nối video');
             }
         };
 
         // Add local tracks
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
-                pc.addTrack(track, localStream);
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
+                pc.addTrack(track, localStreamRef.current!);
             });
-            addLog(`Added ${localStream.getTracks().length} local tracks`);
         }
 
         peerConnectionRef.current = pc;
         return pc;
-    }, [roomId, localStream]);
+    }, [roomId]);
 
     // Create offer
     const createOffer = async (targetSocketId: string) => {
-        if (!socketRef.current || !localStream) {
-            addLog('Cannot create offer - missing socket or stream');
+        if (!socketRef.current || !localStreamRef.current) {
+            console.log('[VideoCall] Cannot create offer - missing socket or stream');
             return;
         }
 
-        addLog(`Creating offer for: ${targetSocketId}`);
+        console.log('[VideoCall] Creating offer for:', targetSocketId);
         const pc = createPeerConnection();
 
         try {
@@ -291,20 +282,16 @@ function VideoCallContent() {
                 targetSocketId,
                 offer,
             });
-            addLog('Offer sent');
         } catch (err) {
-            addLog(`Error creating offer: ${err}`);
+            console.error('[VideoCall] Error creating offer:', err);
         }
     };
 
     // Handle incoming offer
     const handleOffer = async (offer: RTCSessionDescriptionInit, fromSocketId: string) => {
-        if (!socketRef.current || !localStream) {
-            addLog('Cannot handle offer - missing socket or stream');
-            return;
-        }
+        if (!socketRef.current || !localStreamRef.current) return;
 
-        addLog('Handling incoming offer...');
+        console.log('[VideoCall] Handling incoming offer...');
         const pc = createPeerConnection();
 
         try {
@@ -317,9 +304,8 @@ function VideoCallContent() {
                 targetSocketId: fromSocketId,
                 answer,
             });
-            addLog('Answer sent');
         } catch (err) {
-            addLog(`Error handling offer: ${err}`);
+            console.error('[VideoCall] Error handling offer:', err);
         }
     };
 
@@ -379,7 +365,7 @@ function VideoCallContent() {
 
     if (!roomId) {
         return (
-            <div className="min-h-screen bg-[var(--color-bg-primary)] dark:bg-slate-900 flex items-center justify-center">
+            <div className="min-h-screen bg-white dark:bg-slate-900 flex items-center justify-center">
                 <Card className="p-8 text-center">
                     <p className="text-lg text-slate-600 dark:text-slate-300 mb-4">Room ID không hợp lệ</p>
                     <Button onClick={() => router.push('/training1v1')}>
@@ -392,7 +378,7 @@ function VideoCallContent() {
     }
 
     return (
-        <div className="min-h-screen bg-[var(--color-bg-primary)] dark:bg-slate-900 flex flex-col">
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex flex-col">
             {/* Header */}
             <div className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-4">
@@ -412,7 +398,7 @@ function VideoCallContent() {
                 <div className="flex items-center gap-3">
                     <Button variant="outline" size="sm" onClick={copyRoomLink}>
                         {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                        {copied ? 'Đã copy' : 'Copy link mời'}
+                        {copied ? 'Đã copy' : 'Mời người khác'}
                     </Button>
                     <Button variant="destructive" size="sm" onClick={endCall}>
                         <PhoneOff className="w-4 h-4 mr-2" />
@@ -438,7 +424,7 @@ function VideoCallContent() {
                             {isCameraOff && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-slate-200 dark:bg-slate-700">
                                     <div className="text-center">
-                                        <div className="w-20 h-20 mx-auto rounded-full bg-[var(--color-brand-cyan)] flex items-center justify-center text-white text-2xl font-bold mb-2">
+                                        <div className="w-20 h-20 mx-auto rounded-full bg-cyan-500 flex items-center justify-center text-white text-2xl font-bold mb-2">
                                             {userName.charAt(0).toUpperCase()}
                                         </div>
                                         <p className="text-slate-500 dark:text-slate-400">Camera đang tắt</p>
@@ -468,7 +454,7 @@ function VideoCallContent() {
                                             Đang chờ người khác...
                                         </p>
                                         <p className="text-sm text-slate-500 dark:text-slate-400">
-                                            Chia sẻ link để mời
+                                            Nhấn Mời người khác để chia sẻ link
                                         </p>
                                     </div>
                                 </div>
@@ -522,8 +508,8 @@ function VideoCallContent() {
                         {chatMessages.map((msg, idx) => (
                             <div key={idx} className={`${msg.userId === userId ? 'text-right' : 'text-left'}`}>
                                 <div className={`inline-block px-3 py-2 rounded-lg max-w-[85%] ${msg.userId === userId
-                                    ? 'bg-[var(--color-brand-cyan)] text-white'
-                                    : 'bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white'
+                                        ? 'bg-cyan-500 text-white'
+                                        : 'bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white'
                                     }`}>
                                     {msg.userId !== userId && (
                                         <p className="text-xs opacity-70 mb-1">{msg.userName}</p>
@@ -542,21 +528,12 @@ function VideoCallContent() {
                             placeholder="Nhập tin nhắn..."
                             className="bg-slate-50 dark:bg-slate-700"
                         />
-                        <Button size="icon" onClick={sendMessage} className="bg-[var(--color-brand-cyan)] hover:bg-[var(--color-brand-blue)]">
+                        <Button size="icon" onClick={sendMessage} className="bg-cyan-500 hover:bg-cyan-600">
                             <Send className="w-4 h-4" />
                         </Button>
                     </div>
                 </div>
             </div>
-
-            {/* Debug panel - only in development */}
-            {process.env.NODE_ENV === 'development' && debugLog.length > 0 && (
-                <div className="fixed bottom-4 left-4 w-96 bg-black/80 text-green-400 text-xs p-3 rounded-lg max-h-40 overflow-y-auto font-mono">
-                    {debugLog.map((log, i) => (
-                        <div key={i}>{log}</div>
-                    ))}
-                </div>
-            )}
         </div>
     );
 }
@@ -566,7 +543,7 @@ export default function RealVideoCallPage() {
         <Suspense fallback={
             <div className="min-h-screen bg-white dark:bg-slate-900 flex items-center justify-center">
                 <div className="flex items-center gap-3">
-                    <Loader2 className="w-6 h-6 animate-spin text-[var(--color-brand-cyan)]" />
+                    <Loader2 className="w-6 h-6 animate-spin text-cyan-500" />
                     <span className="text-slate-600 dark:text-slate-300">Đang tải...</span>
                 </div>
             </div>
