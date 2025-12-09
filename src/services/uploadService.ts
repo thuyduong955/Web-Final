@@ -9,7 +9,6 @@ interface UploadResponse {
 /**
  * Upload service for R2 storage
  * Uploads files to backend, which then uploads to R2
- * This bypasses CORS issues with direct R2 uploads
  */
 export const uploadService = {
     // ═══════════════════════════════════════════════════════════════
@@ -21,9 +20,8 @@ export const uploadService = {
         const formData = new FormData();
         formData.append('file', file);
 
-        const { data } = await api.post<UploadResponse>('/upload/avatar', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        // Don't set Content-Type manually - axios will set it with boundary
+        const { data } = await api.post<UploadResponse>('/upload/avatar', formData);
 
         return data.url;
     },
@@ -37,9 +35,7 @@ export const uploadService = {
         const formData = new FormData();
         formData.append('file', file);
 
-        const { data } = await api.post<UploadResponse>(`/upload/content/${contentId}/thumbnail`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const { data } = await api.post<UploadResponse>(`/upload/content/${contentId}/thumbnail`, formData);
 
         return data.url;
     },
@@ -58,7 +54,6 @@ export const uploadService = {
         formData.append('file', file);
 
         const { data } = await api.post<UploadResponse>(`/upload/content/${contentId}/video`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
             onUploadProgress: (progressEvent) => {
                 if (progressEvent.total && onProgress) {
                     const progress = Math.round((progressEvent.loaded / progressEvent.total) * 100);
@@ -81,9 +76,7 @@ export const uploadService = {
         const formData = new FormData();
         formData.append('file', file);
 
-        const { data } = await api.post<UploadResponse>(`/upload/content/${contentId}/file`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const { data } = await api.post<UploadResponse>(`/upload/content/${contentId}/file`, formData);
 
         return data.url;
     },
@@ -102,9 +95,7 @@ export const uploadService = {
         const formData = new FormData();
         formData.append('file', file);
 
-        const { data } = await api.post<UploadResponse>('/upload/cv', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const { data } = await api.post<UploadResponse>('/upload/cv', formData);
 
         return data.url;
     },
