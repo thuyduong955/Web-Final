@@ -243,13 +243,16 @@ export function LessonLibraryPage() {
 
     const handleWatchVideo = () => {
         if (selectedLesson) {
-            // If has video URL from R2, open it directly
+            // Route to lesson/video page with video URL for embedded player
+            const params = new URLSearchParams({
+                topic: selectedLesson.title,
+                lessonId: selectedLesson.id,
+            });
+            // Pass videoUrl if available from R2
             if (selectedLesson.videoUrl) {
-                window.open(selectedLesson.videoUrl, '_blank');
-            } else {
-                // Fallback to lesson/video page
-                router.push(`/lesson/video?topic=${encodeURIComponent(selectedLesson.title)}&lessonId=${selectedLesson.id}`);
+                params.set('videoUrl', selectedLesson.videoUrl);
             }
+            router.push(`/lesson/video?${params.toString()}`);
         }
     };
 

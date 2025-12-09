@@ -71,9 +71,10 @@ function LessonVideoContent() {
     const router = useRouter();
     const videoRef = useRef<HTMLVideoElement>(null);
 
-    // Get content ID from query params (from LessonLibraryPage navigation)
+    // Get content ID and video URL from query params
     const lessonId = searchParams.get('lessonId');
     const topic = searchParams.get('topic');
+    const videoUrlParam = searchParams.get('videoUrl'); // Real R2 video URL
 
     // Content state - will be populated from API or use mock as fallback
     const [content, setContent] = useState(MOCK_CONTENT);
@@ -91,26 +92,43 @@ function LessonVideoContent() {
     const [userReview, setUserReview] = useState('');
     const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
-    // Fetch content by ID when available
+    // Fetch content by ID when available or use params
     useEffect(() => {
-        if (!lessonId) return;
-
         const fetchContent = async () => {
             setIsLoading(true);
             try {
-                // TODO: Replace with actual API call when backend is ready
-                // const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/content/${lessonId}`);
-                // const data = await response.json();
-                // setContent(data);
-
-                // For now, use mock data with the topic from URL
-                if (topic) {
-                    setContent(prev => ({
-                        ...prev,
-                        title: decodeURIComponent(topic),
-                        id: lessonId
-                    }));
+                if (lessonId) {
+                    // Try to fetch from API
+                    const { default: api } = await import('@/services/api');
+                    try {
+                        const { data } = await api.get(`/library/${lessonId}`);
+                        if (data) {
+                            setContent({
+                                ...MOCK_CONTENT,
+                                id: data.id,
+                                title: data.title || topic || MOCK_CONTENT.title,
+                                description: data.description || MOCK_CONTENT.description,
+                                videoUrl: videoUrlParam || data.videoUrl || MOCK_CONTENT.videoUrl,
+                                fileUrl: data.fileUrls?.[0] || MOCK_CONTENT.fileUrl,
+                                duration: data.duration || MOCK_CONTENT.duration,
+                                rating: data.averageRating || MOCK_CONTENT.rating,
+                                reviewCount: data.totalReviews || MOCK_CONTENT.reviewCount,
+                                viewCount: data.views || MOCK_CONTENT.viewCount,
+                            });
+                            return;
+                        }
+                    } catch {
+                        console.log('API fetch failed, using params');
+                    }
                 }
+
+                // Use params for title and video URL if API fails
+                setContent(prev => ({
+                    ...prev,
+                    title: topic ? decodeURIComponent(topic) : prev.title,
+                    id: lessonId || prev.id,
+                    videoUrl: videoUrlParam || prev.videoUrl,
+                }));
             } catch (error) {
                 console.error('Failed to fetch content:', error);
             } finally {
@@ -119,7 +137,7 @@ function LessonVideoContent() {
         };
 
         fetchContent();
-    }, [lessonId, topic]);
+    }, [lessonId, topic, videoUrlParam]);
 
     useEffect(() => {
         const video = videoRef.current;
