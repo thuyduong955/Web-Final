@@ -6,13 +6,13 @@ import { io, Socket } from 'socket.io-client';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Send, Copy, Check } from 'lucide-react';
+import { Card } from '@/components/ui/card';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Send, Copy, Check, ArrowLeft, Users, Loader2 } from 'lucide-react';
 
 const STUN_SERVERS = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
     ],
 };
 
@@ -46,44 +46,59 @@ function VideoCallContent() {
     const [isCameraOff, setIsCameraOff] = useState(false);
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
     const [messageInput, setMessageInput] = useState('');
-    const [connectionState, setConnectionState] = useState<string>('Đang kết nối...');
+    const [connectionState, setConnectionState] = useState<string>('Đang khởi tạo...');
     const [copied, setCopied] = useState(false);
+    const [debugLog, setDebugLog] = useState<string[]>([]);
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
-    const peerConnection = useRef<RTCPeerConnection | null>(null);
+    const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const socketRef = useRef<Socket | null>(null);
+    const remoteUserRef = useRef<RoomUser | null>(null);
 
     const userName = profile?.full_name || user?.email?.split('@')[0] || 'User';
-    const userId = user?.id || crypto.randomUUID();
+    const userId = user?.id || `guest-${Date.now()}`;
 
-    // Scroll chat to bottom
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const addLog = (msg: string) => {
+        console.log(`[VideoCall] ${msg}`);
+        setDebugLog(prev => [...prev.slice(-10), `${new Date().toLocaleTimeString()}: ${msg}`]);
     };
 
+    // Scroll chat to bottom
     useEffect(() => {
-        scrollToBottom();
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatMessages]);
 
     // Initialize socket connection
     useEffect(() => {
-        if (!roomId) return;
+        if (!roomId) {
+            setConnectionState('Room ID không hợp lệ');
+            return;
+        }
 
+        // Get WebSocket URL from API URL
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
-        const wsUrl = apiUrl.replace('/api', '').replace('http', 'ws').replace('https', 'wss');
+        // Remove /api suffix and use HTTP for socket.io (it will upgrade to WebSocket)
+        const baseUrl = apiUrl.replace('/api', '').replace(/\/$/, '');
 
-        console.log('🔌 Connecting to WebSocket:', wsUrl);
+        addLog(`Connecting to: ${baseUrl}/video-call`);
+        setConnectionState('Đang kết nối server...');
 
-        const newSocket = io(`${wsUrl}/video-call`, {
-            transports: ['websocket', 'polling'],
+        const newSocket = io(`${baseUrl}/video-call`, {
+            transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
             withCredentials: true,
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
         });
 
+        socketRef.current = newSocket;
+
         newSocket.on('connect', () => {
-            console.log('✅ Socket connected:', newSocket.id);
+            addLog(`Connected! Socket ID: ${newSocket.id}`);
             setIsConnected(true);
-            setConnectionState('Đã kết nối, đang chờ người khác...');
+            setConnectionState('Đang tham gia phòng...');
 
             // Join room
             newSocket.emit('join-room', {
@@ -94,61 +109,76 @@ function VideoCallContent() {
             });
         });
 
-        newSocket.on('disconnect', () => {
-            console.log('❌ Socket disconnected');
+        newSocket.on('connect_error', (err) => {
+            addLog(`Connection error: ${err.message}`);
+            setConnectionState(`Lỗi kết nối: ${err.message}`);
+        });
+
+        newSocket.on('disconnect', (reason) => {
+            addLog(`Disconnected: ${reason}`);
             setIsConnected(false);
-            setConnectionState('Mất kết nối');
+            setConnectionState('Mất kết nối server');
         });
 
         newSocket.on('room-users', async ({ users }: { users: RoomUser[] }) => {
-            console.log('👥 Users in room:', users);
+            addLog(`Users in room: ${users.length}`);
             if (users.length > 0) {
                 const otherUser = users[0];
                 setRemoteUser(otherUser);
+                remoteUserRef.current = otherUser;
                 setConnectionState(`${otherUser.userName} đã trong phòng`);
 
-                // If we joined and there's already someone, we initiate the call
-                await createOffer(otherUser.socketId);
+                // We joined and there's already someone - create offer
+                setTimeout(() => createOffer(otherUser.socketId), 1000);
+            } else {
+                setConnectionState('Đang chờ người khác tham gia...');
             }
         });
 
         newSocket.on('user-joined', async ({ userId, userName, role, socketId }: RoomUser) => {
-            console.log('👤 User joined:', userName);
-            setRemoteUser({ userId, userName, role, socketId });
+            addLog(`User joined: ${userName}`);
+            const newUser = { userId, userName, role, socketId };
+            setRemoteUser(newUser);
+            remoteUserRef.current = newUser;
             setConnectionState(`${userName} đã tham gia`);
 
-            // The existing user creates offer when new user joins
-            await createOffer(socketId);
+            // Existing user creates offer when new user joins
+            setTimeout(() => createOffer(socketId), 1000);
         });
 
         newSocket.on('user-left', ({ userName }: { userName: string }) => {
-            console.log('👋 User left:', userName);
+            addLog(`User left: ${userName}`);
             setRemoteUser(null);
-            setConnectionState('Người kia đã rời phòng');
+            remoteUserRef.current = null;
+            setConnectionState(`${userName} đã rời phòng`);
             if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = null;
             }
         });
 
         newSocket.on('offer', async ({ offer, fromSocketId }: { offer: RTCSessionDescriptionInit; fromSocketId: string }) => {
-            console.log('📥 Received offer from:', fromSocketId);
+            addLog(`Received offer from: ${fromSocketId}`);
             await handleOffer(offer, fromSocketId);
         });
 
         newSocket.on('answer', async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-            console.log('📥 Received answer');
-            if (peerConnection.current) {
-                await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
+            addLog('Received answer');
+            if (peerConnectionRef.current) {
+                try {
+                    await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+                    addLog('Remote description set successfully');
+                } catch (err) {
+                    addLog(`Error setting remote description: ${err}`);
+                }
             }
         });
 
         newSocket.on('ice-candidate', async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-            console.log('🧊 Received ICE candidate');
-            if (peerConnection.current && candidate) {
+            if (peerConnectionRef.current && candidate) {
                 try {
-                    await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+                    await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch (err) {
-                    console.error('Error adding ICE candidate:', err);
+                    addLog(`Error adding ICE candidate: ${err}`);
                 }
             }
         });
@@ -160,6 +190,7 @@ function VideoCallContent() {
         setSocket(newSocket);
 
         return () => {
+            addLog('Cleaning up socket...');
             newSocket.emit('leave-room', { roomId });
             newSocket.disconnect();
         };
@@ -170,6 +201,7 @@ function VideoCallContent() {
     useEffect(() => {
         const initMedia = async () => {
             try {
+                addLog('Requesting camera/mic access...');
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: true,
                     audio: true,
@@ -178,8 +210,9 @@ function VideoCallContent() {
                 if (localVideoRef.current) {
                     localVideoRef.current.srcObject = stream;
                 }
+                addLog('Camera/mic access granted');
             } catch (err) {
-                console.error('Error getting media:', err);
+                addLog(`Media error: ${err}`);
                 setConnectionState('Không thể truy cập camera/mic');
             }
         };
@@ -187,32 +220,31 @@ function VideoCallContent() {
         initMedia();
 
         return () => {
-            // eslint-disable-next-line react-hooks/exhaustive-deps
-            localStream?.getTracks().forEach(track => track.stop());
+            // Cleanup handled elsewhere
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Create peer connection
     const createPeerConnection = useCallback(() => {
-        if (peerConnection.current) {
-            peerConnection.current.close();
+        if (peerConnectionRef.current) {
+            peerConnectionRef.current.close();
         }
 
+        addLog('Creating peer connection...');
         const pc = new RTCPeerConnection(STUN_SERVERS);
 
         pc.onicecandidate = (event) => {
-            if (event.candidate && socket && remoteUser) {
-                socket.emit('ice-candidate', {
+            if (event.candidate && socketRef.current && remoteUserRef.current) {
+                socketRef.current.emit('ice-candidate', {
                     roomId,
-                    targetSocketId: remoteUser.socketId,
+                    targetSocketId: remoteUserRef.current.socketId,
                     candidate: event.candidate,
                 });
             }
         };
 
         pc.ontrack = (event) => {
-            console.log('📹 Received remote track');
+            addLog('Received remote track!');
             if (remoteVideoRef.current && event.streams[0]) {
                 remoteVideoRef.current.srcObject = event.streams[0];
                 setConnectionState('Đang gọi video');
@@ -220,7 +252,7 @@ function VideoCallContent() {
         };
 
         pc.onconnectionstatechange = () => {
-            console.log('🔗 Connection state:', pc.connectionState);
+            addLog(`Connection state: ${pc.connectionState}`);
             if (pc.connectionState === 'connected') {
                 setConnectionState('Đang gọi video');
             } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
@@ -233,36 +265,46 @@ function VideoCallContent() {
             localStream.getTracks().forEach(track => {
                 pc.addTrack(track, localStream);
             });
+            addLog(`Added ${localStream.getTracks().length} local tracks`);
         }
 
-        peerConnection.current = pc;
+        peerConnectionRef.current = pc;
         return pc;
-    }, [socket, roomId, remoteUser, localStream]);
+    }, [roomId, localStream]);
 
     // Create offer
     const createOffer = async (targetSocketId: string) => {
-        if (!socket || !localStream) return;
+        if (!socketRef.current || !localStream) {
+            addLog('Cannot create offer - missing socket or stream');
+            return;
+        }
 
+        addLog(`Creating offer for: ${targetSocketId}`);
         const pc = createPeerConnection();
 
         try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            socket.emit('offer', {
+            socketRef.current.emit('offer', {
                 roomId,
                 targetSocketId,
                 offer,
             });
+            addLog('Offer sent');
         } catch (err) {
-            console.error('Error creating offer:', err);
+            addLog(`Error creating offer: ${err}`);
         }
     };
 
     // Handle incoming offer
     const handleOffer = async (offer: RTCSessionDescriptionInit, fromSocketId: string) => {
-        if (!socket || !localStream) return;
+        if (!socketRef.current || !localStream) {
+            addLog('Cannot handle offer - missing socket or stream');
+            return;
+        }
 
+        addLog('Handling incoming offer...');
         const pc = createPeerConnection();
 
         try {
@@ -270,13 +312,14 @@ function VideoCallContent() {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            socket.emit('answer', {
+            socketRef.current.emit('answer', {
                 roomId,
                 targetSocketId: fromSocketId,
                 answer,
             });
+            addLog('Answer sent');
         } catch (err) {
-            console.error('Error handling offer:', err);
+            addLog(`Error handling offer: ${err}`);
         }
     };
 
@@ -321,13 +364,14 @@ function VideoCallContent() {
             socket.disconnect();
         }
         localStream?.getTracks().forEach(track => track.stop());
-        peerConnection.current?.close();
+        peerConnectionRef.current?.close();
         router.push('/training1v1');
     };
 
     // Copy room link
     const copyRoomLink = () => {
-        const link = `${window.location.origin}/training1v1/call?room=${roomId}&role=interviewee`;
+        const otherRole = role === 'interviewer' ? 'interviewee' : 'interviewer';
+        const link = `${window.location.origin}/training1v1/call?room=${roomId}&role=${otherRole}`;
         navigator.clipboard.writeText(link);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -335,29 +379,40 @@ function VideoCallContent() {
 
     if (!roomId) {
         return (
-            <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-                <div className="text-white text-xl">Room ID không hợp lệ</div>
+            <div className="min-h-screen bg-[var(--color-bg-primary)] dark:bg-slate-900 flex items-center justify-center">
+                <Card className="p-8 text-center">
+                    <p className="text-lg text-slate-600 dark:text-slate-300 mb-4">Room ID không hợp lệ</p>
+                    <Button onClick={() => router.push('/training1v1')}>
+                        <ArrowLeft className="w-4 h-4 mr-2" />
+                        Quay lại
+                    </Button>
+                </Card>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen bg-slate-900 flex flex-col">
+        <div className="min-h-screen bg-[var(--color-bg-primary)] dark:bg-slate-900 flex flex-col">
             {/* Header */}
-            <div className="bg-slate-800 px-6 py-4 flex items-center justify-between">
+            <div className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-cyan-500 flex items-center justify-center text-white font-bold">
-                        {userName.charAt(0).toUpperCase()}
-                    </div>
+                    <Button variant="ghost" size="icon" onClick={() => router.push('/training1v1')}>
+                        <ArrowLeft className="w-5 h-5" />
+                    </Button>
                     <div>
-                        <h1 className="text-white font-semibold">Phỏng vấn 1v1</h1>
-                        <p className="text-slate-400 text-sm">{connectionState}</p>
+                        <h1 className="text-lg font-semibold text-slate-900 dark:text-white">
+                            Phỏng vấn 1v1
+                        </h1>
+                        <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+                            <p className="text-sm text-slate-500 dark:text-slate-400">{connectionState}</p>
+                        </div>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={copyRoomLink} className="text-white border-slate-600">
+                <div className="flex items-center gap-3">
+                    <Button variant="outline" size="sm" onClick={copyRoomLink}>
                         {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                        {copied ? 'Đã copy' : 'Copy link'}
+                        {copied ? 'Đã copy' : 'Copy link mời'}
                     </Button>
                     <Button variant="destructive" size="sm" onClick={endCall}>
                         <PhoneOff className="w-4 h-4 mr-2" />
@@ -368,70 +423,110 @@ function VideoCallContent() {
 
             {/* Main content */}
             <div className="flex-1 flex">
-                {/* Video grid */}
-                <div className="flex-1 p-6 grid grid-cols-2 gap-4">
-                    {/* Local video */}
-                    <div className="relative bg-slate-800 rounded-2xl overflow-hidden">
-                        <video
-                            ref={localVideoRef}
-                            autoPlay
-                            playsInline
-                            muted
-                            className="w-full h-full object-cover"
-                        />
-                        {isCameraOff && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-slate-700">
-                                <div className="text-center">
-                                    <div className="w-20 h-20 mx-auto rounded-full bg-slate-600 flex items-center justify-center text-white text-2xl font-bold mb-2">
-                                        {userName.charAt(0).toUpperCase()}
+                {/* Video area */}
+                <div className="flex-1 p-6">
+                    <div className="h-full grid grid-cols-2 gap-4">
+                        {/* Local video */}
+                        <Card className="relative overflow-hidden bg-slate-100 dark:bg-slate-800">
+                            <video
+                                ref={localVideoRef}
+                                autoPlay
+                                playsInline
+                                muted
+                                className="w-full h-full object-cover"
+                            />
+                            {isCameraOff && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-slate-200 dark:bg-slate-700">
+                                    <div className="text-center">
+                                        <div className="w-20 h-20 mx-auto rounded-full bg-[var(--color-brand-cyan)] flex items-center justify-center text-white text-2xl font-bold mb-2">
+                                            {userName.charAt(0).toUpperCase()}
+                                        </div>
+                                        <p className="text-slate-500 dark:text-slate-400">Camera đang tắt</p>
                                     </div>
-                                    <p className="text-slate-400">Camera đang tắt</p>
                                 </div>
+                            )}
+                            <div className="absolute bottom-4 left-4 px-3 py-1.5 bg-black/50 rounded-lg text-white text-sm">
+                                Bạn ({role === 'interviewer' ? 'Interviewer' : 'Interviewee'})
                             </div>
-                        )}
-                        <div className="absolute bottom-4 left-4 px-3 py-1.5 bg-black/60 rounded-lg text-white text-sm">
-                            Bạn ({role === 'interviewer' ? 'Interviewer' : 'Interviewee'})
-                        </div>
+                        </Card>
+
+                        {/* Remote video */}
+                        <Card className="relative overflow-hidden bg-slate-100 dark:bg-slate-800">
+                            <video
+                                ref={remoteVideoRef}
+                                autoPlay
+                                playsInline
+                                className="w-full h-full object-cover"
+                            />
+                            {!remoteUser && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <div className="text-center">
+                                        <div className="w-20 h-20 mx-auto rounded-full bg-slate-300 dark:bg-slate-600 flex items-center justify-center mb-4">
+                                            <Users className="w-10 h-10 text-slate-500 dark:text-slate-400" />
+                                        </div>
+                                        <p className="text-slate-600 dark:text-slate-300 font-medium mb-2">
+                                            Đang chờ người khác...
+                                        </p>
+                                        <p className="text-sm text-slate-500 dark:text-slate-400">
+                                            Chia sẻ link để mời
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                            {remoteUser && (
+                                <div className="absolute bottom-4 left-4 px-3 py-1.5 bg-black/50 rounded-lg text-white text-sm">
+                                    {remoteUser.userName} ({remoteUser.role === 'interviewer' ? 'Interviewer' : 'Interviewee'})
+                                </div>
+                            )}
+                        </Card>
                     </div>
 
-                    {/* Remote video */}
-                    <div className="relative bg-slate-800 rounded-2xl overflow-hidden">
-                        <video
-                            ref={remoteVideoRef}
-                            autoPlay
-                            playsInline
-                            className="w-full h-full object-cover"
-                        />
-                        {!remoteUser && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                <div className="text-center">
-                                    <div className="w-20 h-20 mx-auto rounded-full bg-slate-600 flex items-center justify-center text-slate-400 text-2xl mb-4">
-                                        ?
-                                    </div>
-                                    <p className="text-slate-400 mb-4">Đang chờ người khác tham gia...</p>
-                                    <p className="text-slate-500 text-sm">Chia sẻ link phòng để mời người khác</p>
-                                </div>
-                            </div>
-                        )}
-                        {remoteUser && (
-                            <div className="absolute bottom-4 left-4 px-3 py-1.5 bg-black/60 rounded-lg text-white text-sm">
-                                {remoteUser.userName} ({remoteUser.role === 'interviewer' ? 'Interviewer' : 'Interviewee'})
-                            </div>
-                        )}
+                    {/* Controls */}
+                    <div className="mt-4 flex items-center justify-center gap-4">
+                        <Button
+                            variant={isMuted ? 'destructive' : 'secondary'}
+                            size="lg"
+                            onClick={toggleMic}
+                            className="rounded-full w-14 h-14"
+                        >
+                            {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                        </Button>
+                        <Button
+                            variant={isCameraOff ? 'destructive' : 'secondary'}
+                            size="lg"
+                            onClick={toggleCamera}
+                            className="rounded-full w-14 h-14"
+                        >
+                            {isCameraOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            size="lg"
+                            onClick={endCall}
+                            className="rounded-full w-14 h-14"
+                        >
+                            <PhoneOff className="w-6 h-6" />
+                        </Button>
                     </div>
                 </div>
 
                 {/* Chat sidebar */}
-                <div className="w-80 bg-slate-800 flex flex-col">
-                    <div className="p-4 border-b border-slate-700">
-                        <h3 className="text-white font-semibold">Chat</h3>
+                <div className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col">
+                    <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+                        <h3 className="font-semibold text-slate-900 dark:text-white">Chat</h3>
                     </div>
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                        {chatMessages.length === 0 && (
+                            <p className="text-center text-sm text-slate-400">Chưa có tin nhắn</p>
+                        )}
                         {chatMessages.map((msg, idx) => (
                             <div key={idx} className={`${msg.userId === userId ? 'text-right' : 'text-left'}`}>
-                                <div className={`inline-block px-3 py-2 rounded-lg max-w-[80%] ${msg.userId === userId ? 'bg-cyan-500 text-white' : 'bg-slate-700 text-white'}`}>
+                                <div className={`inline-block px-3 py-2 rounded-lg max-w-[85%] ${msg.userId === userId
+                                    ? 'bg-[var(--color-brand-cyan)] text-white'
+                                    : 'bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white'
+                                    }`}>
                                     {msg.userId !== userId && (
-                                        <p className="text-xs text-slate-300 mb-1">{msg.userName}</p>
+                                        <p className="text-xs opacity-70 mb-1">{msg.userName}</p>
                                     )}
                                     <p className="text-sm">{msg.message}</p>
                                 </div>
@@ -439,48 +534,29 @@ function VideoCallContent() {
                         ))}
                         <div ref={messagesEndRef} />
                     </div>
-                    <div className="p-4 border-t border-slate-700 flex gap-2">
+                    <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex gap-2">
                         <Input
                             value={messageInput}
                             onChange={(e) => setMessageInput(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
                             placeholder="Nhập tin nhắn..."
-                            className="bg-slate-700 border-slate-600 text-white"
+                            className="bg-slate-50 dark:bg-slate-700"
                         />
-                        <Button size="icon" onClick={sendMessage} className="bg-cyan-500 hover:bg-cyan-600">
+                        <Button size="icon" onClick={sendMessage} className="bg-[var(--color-brand-cyan)] hover:bg-[var(--color-brand-blue)]">
                             <Send className="w-4 h-4" />
                         </Button>
                     </div>
                 </div>
             </div>
 
-            {/* Controls */}
-            <div className="bg-slate-800 px-6 py-4 flex items-center justify-center gap-4">
-                <Button
-                    variant={isMuted ? 'destructive' : 'secondary'}
-                    size="lg"
-                    onClick={toggleMic}
-                    className="rounded-full w-14 h-14"
-                >
-                    {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-                </Button>
-                <Button
-                    variant={isCameraOff ? 'destructive' : 'secondary'}
-                    size="lg"
-                    onClick={toggleCamera}
-                    className="rounded-full w-14 h-14"
-                >
-                    {isCameraOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
-                </Button>
-                <Button
-                    variant="destructive"
-                    size="lg"
-                    onClick={endCall}
-                    className="rounded-full w-14 h-14"
-                >
-                    <PhoneOff className="w-6 h-6" />
-                </Button>
-            </div>
+            {/* Debug panel - only in development */}
+            {process.env.NODE_ENV === 'development' && debugLog.length > 0 && (
+                <div className="fixed bottom-4 left-4 w-96 bg-black/80 text-green-400 text-xs p-3 rounded-lg max-h-40 overflow-y-auto font-mono">
+                    {debugLog.map((log, i) => (
+                        <div key={i}>{log}</div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -488,8 +564,11 @@ function VideoCallContent() {
 export default function RealVideoCallPage() {
     return (
         <Suspense fallback={
-            <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-                <div className="text-white text-xl">Đang tải...</div>
+            <div className="min-h-screen bg-white dark:bg-slate-900 flex items-center justify-center">
+                <div className="flex items-center gap-3">
+                    <Loader2 className="w-6 h-6 animate-spin text-[var(--color-brand-cyan)]" />
+                    <span className="text-slate-600 dark:text-slate-300">Đang tải...</span>
+                </div>
             </div>
         }>
             <VideoCallContent />
