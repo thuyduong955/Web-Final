@@ -184,13 +184,8 @@ export default function CalendarPage() {
     };
 
     const canJoinCall = (booking: CalendarBooking) => {
-        if (booking.status !== 'CONFIRMED' || !booking.meetingLink) return false;
-        const now = new Date();
-        const start = new Date(booking.startTime);
-        const end = new Date(booking.endTime);
-        const joinStart = new Date(start.getTime() - 10 * 60 * 1000);
-        const joinEnd = new Date(end.getTime() + 30 * 60 * 1000);
-        return now >= joinStart && now <= joinEnd;
+        // Allow joining immediately if confirmed and has link (ignoring time constraints)
+        return booking.status === 'CONFIRMED' && !!booking.meetingLink;
     };
 
     // ═══════════════════════════════════════════════════════════════
