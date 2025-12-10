@@ -152,6 +152,22 @@ export const Training1v1: React.FC = () => {
     const [interviewerAvailability, setInterviewerAvailability] = useState<TimeSlot[]>([]);
     const [loadingAvailability, setLoadingAvailability] = useState(false);
 
+    // Date selection state
+    const [availableDates, setAvailableDates] = useState<{ value: string; label: string }[]>([]);
+
+    useEffect(() => {
+        const days = [];
+        for (let i = 0; i < 7; i++) {
+            const date = new Date();
+            date.setDate(date.getDate() + i);
+            days.push({
+                value: date.toISOString().split('T')[0],
+                label: date.toLocaleDateString('vi-VN', { weekday: 'short', day: 'numeric', month: 'numeric' }),
+            });
+        }
+        setAvailableDates(days);
+    }, []);
+
     // Review dialog state
     const [showReviewDialog, setShowReviewDialog] = useState(false);
     const [bookingToReview, setBookingToReview] = useState<Booking | null>(null);
@@ -358,19 +374,6 @@ export const Training1v1: React.FC = () => {
         const joinStart = new Date(start.getTime() - 10 * 60 * 1000);
         const joinEnd = new Date(end.getTime() + 30 * 60 * 1000);
         return now >= joinStart && now <= joinEnd;
-    };
-
-    const getNext7Days = () => {
-        const days = [];
-        for (let i = 0; i < 7; i++) {
-            const date = new Date();
-            date.setDate(date.getDate() + i);
-            days.push({
-                value: date.toISOString().split('T')[0],
-                label: date.toLocaleDateString('vi-VN', { weekday: 'short', day: 'numeric', month: 'numeric' }),
-            });
-        }
-        return days;
     };
 
     // Filter bookings
@@ -808,7 +811,7 @@ export const Training1v1: React.FC = () => {
                                 <div>
                                     <label className="block text-sm font-medium mb-2">Chọn ngày</label>
                                     <div className="grid grid-cols-4 gap-2">
-                                        {getNext7Days().map((day) => (
+                                        {availableDates.map((day) => (
                                             <button
                                                 key={day.value}
                                                 type="button"
